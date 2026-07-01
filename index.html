@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PAC-MAN</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="loading-screen">
+            <h1 id="title">PAC-MAN</h1>
+            <p id="loading-text">INSERT COIN</p>
+            <button id="start-btn">PLAY</button>
+            <p id="controls-hint">Arrow Keys or WASD to move</p>
+        </div>
+        <div id="game-wrap" class="hidden">
+            <div id="hud">
+                <div id="score-display">
+                    <span class="label">SCORE</span>
+                    <span id="score">0</span>
+                </div>
+                <div id="level-display">
+                    <span class="label">LEVEL</span>
+                    <span id="level">1</span>
+                </div>
+                <div id="lives-display">
+                    <span class="label">LIVES</span>
+                    <div id="lives"></div>
+                </div>
+            </div>
+            <canvas id="game-canvas" width="448" height="496"></canvas>
+            <div id="fruit-row"></div>
+        </div>
+        <div id="overlay" class="hidden">
+            <div id="overlay-text"></div>
+        </div>
+    </div>
+    <script src="game.js?v=10"></script>
+</body>
+</html>
