@@ -138,9 +138,10 @@ body {
 
 #game-canvas {
     display: block;
-    border: 2px solid #1a1aff;
+    border: 0;
+    outline: 0;
     background: #000;
-    box-shadow: 0 0 40px rgba(26, 26, 255, 0.3);
+    image-rendering: pixelated;
 }
 
 #overlay {
