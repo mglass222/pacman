@@ -82,6 +82,9 @@ const PAC_RADIUS = TILE * 0.72;
 const GHOST_HALF_W = TILE * 0.68;
 const GHOST_TOP = TILE * 0.72;
 const GHOST_BOTTOM = TILE * 0.68;
+const MAZE_PATH_EXPAND = TILE * 0.25;
+const MAZE_CORNER_RADIUS = TILE * 0.24;
+const OUTER_MAZE_RADIUS = TILE * 0.48;
 
 const GHOST_COLORS = {
     blinky: '#FF0000',
@@ -988,52 +991,160 @@ function drawMaze(colorOverride) {
         ctx.save();
         ctx.strokeStyle = color;
         ctx.lineWidth = width;
-        ctx.lineCap = 'round';
+        ctx.lineCap = 'butt';
         ctx.lineJoin = 'round';
-        ctx.beginPath();
 
-        const corner = 4;
+        const isOpenTile = (c, r) => {
+            if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return false;
+            const t = grid[r][c];
+            return t !== T.WALL && t !== T.DOOR && !isOutside(c, r);
+        };
+
+        const key = (x, y) => x + ',' + y;
+        const edges = [];
+        const addEdge = (sx, sy, ex, ey, nx, ny) => {
+            edges.push({ sx, sy, ex, ey, nx, ny, dx: ex - sx, dy: ey - sy });
+        };
         for (let r = 0; r < ROWS; r++) {
             for (let c = 0; c < COLS; c++) {
-                const t = grid[r][c];
-                if (t === T.WALL || t === T.DOOR || isOutside(c, r)) continue;
-
-                const x = c * TILE;
-                const y = r * TILE;
-                const top = isWallOrOutside(c, r - 1);
-                const bottom = isWallOrOutside(c, r + 1);
-                const left = isWallOrOutside(c - 1, r) && !(r === 14 && c === 0);
-                const right = isWallOrOutside(c + 1, r) && !(r === 14 && c === COLS - 1);
-
-                const tl = top && left ? corner : 0;
-                const tr = top && right ? corner : 0;
-                const br = bottom && right ? corner : 0;
-                const bl = bottom && left ? corner : 0;
-
-                if (top) { ctx.moveTo(x + tl, y); ctx.lineTo(x + TILE - tr, y); }
-                if (bottom) { ctx.moveTo(x + bl, y + TILE); ctx.lineTo(x + TILE - br, y + TILE); }
-                if (left) { ctx.moveTo(x, y + tl); ctx.lineTo(x, y + TILE - bl); }
-                if (right) { ctx.moveTo(x + TILE, y + tr); ctx.lineTo(x + TILE, y + TILE - br); }
-
-                if (top && left) {
-                    ctx.moveTo(x, y + corner);
-                    ctx.quadraticCurveTo(x, y, x + corner, y);
-                }
-                if (top && right) {
-                    ctx.moveTo(x + TILE - corner, y);
-                    ctx.quadraticCurveTo(x + TILE, y, x + TILE, y + corner);
-                }
-                if (bottom && right) {
-                    ctx.moveTo(x + TILE, y + TILE - corner);
-                    ctx.quadraticCurveTo(x + TILE, y + TILE, x + TILE - corner, y + TILE);
-                }
-                if (bottom && left) {
-                    ctx.moveTo(x + corner, y + TILE);
-                    ctx.quadraticCurveTo(x, y + TILE, x, y + TILE - corner);
-                }
+                if (!isOpenTile(c, r)) continue;
+                if (isWallOrOutside(c, r - 1)) addEdge(c, r, c + 1, r, 0, -1);
+                if (isWallOrOutside(c + 1, r) && !(r === 14 && c === COLS - 1)) addEdge(c + 1, r, c + 1, r + 1, 1, 0);
+                if (isWallOrOutside(c, r + 1)) addEdge(c + 1, r + 1, c, r + 1, 0, 1);
+                if (isWallOrOutside(c - 1, r) && !(r === 14 && c === 0)) addEdge(c, r + 1, c, r, -1, 0);
             }
         }
 
+        const incident = new Map();
+        const vertexEdges = new Map();
+        const addIncident = (x, y) => {
+            const vertexKey = key(x, y);
+            incident.set(vertexKey, (incident.get(vertexKey) || 0) + 1);
+        };
+        edges.forEach((edge, index) => {
+            addIncident(edge.sx, edge.sy);
+            addIncident(edge.ex, edge.ey);
+            for (const vertexKey of [key(edge.sx, edge.sy), key(edge.ex, edge.ey)]) {
+                if (!vertexEdges.has(vertexKey)) vertexEdges.set(vertexKey, []);
+                vertexEdges.get(vertexKey).push(index);
+            }
+        });
+
+        const starts = new Map();
+        edges.forEach((edge, index) => {
+            const startKey = key(edge.sx, edge.sy);
+            if (!starts.has(startKey)) starts.set(startKey, []);
+            starts.get(startKey).push(index);
+        });
+
+        const used = new Set();
+        const contours = [];
+        const chooseNext = (from, candidates) => {
+            const prevDx = from.dx;
+            const prevDy = from.dy;
+            let best = candidates[0];
+            let bestScore = -Infinity;
+            for (const index of candidates) {
+                const next = edges[index];
+                const dot = prevDx * next.dx + prevDy * next.dy;
+                const cross = prevDx * next.dy - prevDy * next.dx;
+                const score = (cross < 0 ? 4 : 0) + (dot > 0 ? 2 : 0) + (cross === 0 ? 1 : 0);
+                if (score > bestScore) {
+                    best = index;
+                    bestScore = score;
+                }
+            }
+            return best;
+        };
+
+        for (let i = 0; i < edges.length; i++) {
+            if (used.has(i)) continue;
+            const contour = [];
+            let index = i;
+            while (index !== undefined && !used.has(index)) {
+                const edge = edges[index];
+                contour.push(edge);
+                used.add(index);
+                const nextEdges = (starts.get(key(edge.ex, edge.ey)) || []).filter((next) => !used.has(next));
+                index = nextEdges.length ? chooseNext(edge, nextEdges) : undefined;
+                if (index === i) break;
+            }
+            if (contour.length) contours.push(contour);
+        }
+
+        const turnsInto = (from, to) => from && to && (from.dx !== to.dx || from.dy !== to.dy);
+        const isSimpleVertex = (x, y) => (incident.get(key(x, y)) || 0) === 2;
+        const jointPoint = (from, to, x, y) => ({
+            x: x * TILE + (from.nx + to.nx) * MAZE_PATH_EXPAND,
+            y: y * TILE + (from.ny + to.ny) * MAZE_PATH_EXPAND,
+        });
+        const neighborAtVertex = (edge, x, y) => {
+            const candidates = vertexEdges.get(key(x, y)) || [];
+            for (const index of candidates) {
+                const other = edges[index];
+                if (other === edge) continue;
+                if (other.dx !== edge.dx || other.dy !== edge.dy) return other;
+            }
+            return null;
+        };
+        const pointOnEdge = (edge, atEnd, trim) => {
+            const x = (atEnd ? edge.ex : edge.sx) * TILE + edge.nx * MAZE_PATH_EXPAND;
+            const y = (atEnd ? edge.ey : edge.sy) * TILE + edge.ny * MAZE_PATH_EXPAND;
+            const sign = atEnd ? -1 : 1;
+            return {
+                x: x + edge.dx * trim * sign,
+                y: y + edge.dy * trim * sign,
+            };
+        };
+        const openEndpoint = (edge, atEnd) => {
+            const vx = atEnd ? edge.ex : edge.sx;
+            const vy = atEnd ? edge.ey : edge.sy;
+            const neighbor = neighborAtVertex(edge, vx, vy);
+            return neighbor ? jointPoint(edge, neighbor, vx, vy) : pointOnEdge(edge, atEnd, 0);
+        };
+
+        ctx.beginPath();
+        for (const contour of contours) {
+            const closed = contour.length > 1 &&
+                contour[0].sx === contour[contour.length - 1].ex &&
+                contour[0].sy === contour[contour.length - 1].ey;
+            const startEdge = contour[0];
+            const previousEdge = closed ? contour[contour.length - 1] : null;
+            const startTurn = turnsInto(previousEdge, startEdge) && isSimpleVertex(startEdge.sx, startEdge.sy);
+            let start;
+            if (turnsInto(previousEdge, startEdge) && !startTurn) {
+                start = jointPoint(previousEdge, startEdge, startEdge.sx, startEdge.sy);
+            } else if (!previousEdge) {
+                start = openEndpoint(startEdge, false);
+            } else {
+                start = pointOnEdge(startEdge, false, startTurn ? MAZE_CORNER_RADIUS : 0);
+            }
+            ctx.moveTo(start.x, start.y);
+
+            for (let i = 0; i < contour.length; i++) {
+                const edge = contour[i];
+                const next = i === contour.length - 1 ? (closed ? contour[0] : null) : contour[i + 1];
+                const turns = turnsInto(edge, next);
+                const simpleTurn = turns && isSimpleVertex(edge.ex, edge.ey);
+                let end;
+                if (turns && !simpleTurn) {
+                    end = jointPoint(edge, next, edge.ex, edge.ey);
+                } else if (!next) {
+                    end = openEndpoint(edge, true);
+                } else {
+                    end = pointOnEdge(edge, true, simpleTurn ? MAZE_CORNER_RADIUS : 0);
+                }
+                ctx.lineTo(end.x, end.y);
+                if (turns) {
+                    if (simpleTurn) {
+                        const turn = jointPoint(edge, next, edge.ex, edge.ey);
+                        const nextStart = pointOnEdge(next, false, MAZE_CORNER_RADIUS);
+                        ctx.quadraticCurveTo(turn.x, turn.y, nextStart.x, nextStart.y);
+                    }
+                }
+            }
+            if (closed) ctx.closePath();
+        }
         ctx.stroke();
         ctx.restore();
     };
@@ -1045,25 +1156,27 @@ function drawMaze(colorOverride) {
         const right = CANVAS_W - inset;
         const top = inset;
         const bottom = CANVAS_H - inset;
+        const radius = Math.max(0, OUTER_MAZE_RADIUS - inset * 0.35);
 
         ctx.save();
         ctx.strokeStyle = color;
         ctx.lineWidth = width;
-        ctx.lineCap = 'round';
+        ctx.lineCap = 'butt';
         ctx.lineJoin = 'round';
         ctx.beginPath();
-        ctx.moveTo(left, top);
-        ctx.lineTo(right, top);
-        ctx.moveTo(left, bottom);
-        ctx.lineTo(right, bottom);
-        ctx.moveTo(left, top);
-        ctx.lineTo(left, gapTop);
-        ctx.moveTo(left, gapBottom);
-        ctx.lineTo(left, bottom);
-        ctx.moveTo(right, top);
+        ctx.moveTo(left + radius, top);
+        ctx.lineTo(right - radius, top);
+        ctx.quadraticCurveTo(right, top, right, top + radius);
         ctx.lineTo(right, gapTop);
         ctx.moveTo(right, gapBottom);
-        ctx.lineTo(right, bottom);
+        ctx.lineTo(right, bottom - radius);
+        ctx.quadraticCurveTo(right, bottom, right - radius, bottom);
+        ctx.lineTo(left + radius, bottom);
+        ctx.quadraticCurveTo(left, bottom, left, bottom - radius);
+        ctx.lineTo(left, gapBottom);
+        ctx.moveTo(left, gapTop);
+        ctx.lineTo(left, top + radius);
+        ctx.quadraticCurveTo(left, top, left + radius, top);
         ctx.stroke();
         ctx.restore();
     };
