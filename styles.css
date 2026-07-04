@@ -12,6 +12,8 @@ body {
     min-height: 100vh;
     font-family: 'Courier New', monospace;
     overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
     user-select: none;
 }
 
@@ -78,6 +80,7 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
+    touch-action: none;
 }
 
 #hud {
@@ -138,9 +141,11 @@ body {
 
 #game-canvas {
     display: block;
-    border: 2px solid #1a1aff;
+    border: 0;
+    outline: 0;
     background: #000;
-    box-shadow: 0 0 40px rgba(26, 26, 255, 0.3);
+    image-rendering: pixelated;
+    touch-action: none;
 }
 
 #overlay {

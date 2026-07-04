@@ -68,9 +68,25 @@ const SCATTER_CHASE = [
     { mode: 'chase',   t: Infinity },
 ];
 
-const FRIGHT_TIME = 7;
 const FRIGHT_FLASH_TIME = 2.5;
 const FRIGHT_FLASHES = 5;
+const DOT_STALL_FRAMES = 1;
+const PELLET_STALL_FRAMES = 3;
+const EAT_GHOST_PAUSE = 0.45;
+const GHOST_NO_UP_TURNS = new Set(['12,11', '15,11', '12,23', '15,23']);
+const PAC_MOUTH_FRAMES = [0.06, 0.28, 0.52, 0.28];
+const GHOST_FOOT_RATE = 8;
+const FRIGHT_BLUE = '#0000BB';
+const FRIGHT_FACE = '#FFB897';
+const PAC_RADIUS = TILE * 0.72;
+const GHOST_HALF_W = TILE * 0.68;
+const GHOST_TOP = TILE * 0.72;
+const GHOST_BOTTOM = TILE * 0.68;
+const MAZE_PATH_EXPAND = TILE * 0.25;
+const MAZE_CORNER_RADIUS = TILE * 0.24;
+const OUTER_MAZE_RADIUS = TILE * 0.48;
+const SWIPE_MIN_DISTANCE = 24;
+const SWIPE_AXIS_RATIO = 1.25;
 
 const GHOST_COLORS = {
     blinky: '#FF0000',
@@ -111,6 +127,21 @@ const READY_TIME = 2.2;
 const DEATH_ANIM_TIME = 2.0;
 const LEVEL_COMPLETE_TIME = 3.0;
 
+function frightTimeForLevel(lvl) {
+    if (lvl === 1) return 6;
+    if (lvl <= 4) return 5;
+    if (lvl <= 8) return 3;
+    if (lvl <= 16) return 2;
+    return 1;
+}
+
+function levelSpeedScale() {
+    if (level <= 1) return 1;
+    if (level <= 4) return 1.04;
+    if (level <= 20) return 1.08;
+    return 1.02;
+}
+
 function reverseDir(d) {
     if (d === DIR.UP) return DIR.DOWN;
     if (d === DIR.DOWN) return DIR.UP;
@@ -128,10 +159,12 @@ let gameState;
 let scatterChaseIndex;
 let scatterChaseTimer;
 let frightTimer;
+let activeFrightTime;
 let ghostsEatenInPower;
 let dotsAtFruit;
 let globalDotCounter;
 let stateTimer;
+let eatGhostPauseTimer;
 let frameCount;
 let pacman, ghosts;
 let fruit;
@@ -188,9 +221,11 @@ function initLevel(playIntro) {
     scatterChaseIndex = 0;
     scatterChaseTimer = SCATTER_CHASE[0].t;
     frightTimer = 0;
+    activeFrightTime = frightTimeForLevel(level);
     ghostsEatenInPower = 0;
     dotsAtFruit = 0;
     stateTimer = READY_TIME;
+    eatGhostPauseTimer = 0;
     frameCount = 0;
     if (sound) sound.lastMode = 'none';
 
@@ -255,6 +290,11 @@ function inTunnel(col, row) {
     return row === 14 && (col <= 5 || col >= 22);
 }
 
+function isGhostNoUpTurn(col, row, ghost) {
+    if (!ghost || ghost.frightened || ghost.eyes) return false;
+    return GHOST_NO_UP_TURNS.has(col + ',' + row);
+}
+
 function canEnter(col, row, entity) {
     if (col < 0 || col >= COLS) return row === 14;
     const t = tileAt(col, row);
@@ -279,17 +319,22 @@ class PacMan {
         this.mouthDir = 1;
         this.dead = false;
         this.deathAngle = 0;
+        this.stallFrames = 0;
     }
 
     get speed() {
         const col = xToCol(this.x);
         const row = yToRow(this.y);
         let s = (tileAt(col, row) === T.DOT || tileAt(col, row) === T.PELLET) ? SPEED.pacmanDots : SPEED.pacman;
-        return s;
+        return s * levelSpeedScale();
     }
 
     update() {
         if (this.dead) return;
+        if (this.stallFrames > 0) {
+            this.stallFrames--;
+            return;
+        }
         const col = xToCol(this.x);
         const row = yToRow(this.y);
         const cx = colToX(col);
@@ -329,6 +374,7 @@ class PacMan {
             dotsEaten++;
             globalDotCounter++;
             score += 10;
+            this.stallFrames = DOT_STALL_FRAMES;
             try { sound.waka(); } catch (e) {}
             checkFruitSpawn();
             checkGhostRelease();
@@ -338,6 +384,7 @@ class PacMan {
             dotsEaten++;
             globalDotCounter++;
             score += 50;
+            this.stallFrames = PELLET_STALL_FRAMES;
             checkFruitSpawn();
             checkGhostRelease();
             triggerFrightened();
@@ -351,9 +398,10 @@ class PacMan {
             ctx.translate(this.x, this.y);
             ctx.fillStyle = '#FFFF00';
             ctx.beginPath();
-            const a = this.deathAngle;
-            if (a < Math.PI) {
-                ctx.arc(0, 0, TILE * 0.55, a, Math.PI * 2 - a);
+            const a = Math.min(Math.PI, this.deathAngle);
+            const radius = PAC_RADIUS * Math.max(0, 1 - Math.max(0, this.deathAngle - Math.PI) * 0.8);
+            if (radius > 0.5) {
+                ctx.arc(0, 0, radius, -Math.PI / 2 + a, Math.PI * 1.5 - a);
                 ctx.lineTo(0, 0);
                 ctx.fill();
             }
@@ -369,8 +417,9 @@ class PacMan {
         ctx.rotate(rot);
         ctx.fillStyle = '#FFFF00';
         ctx.beginPath();
-        const ma = this.dir === DIR.NONE ? 0.1 : this.mouthAngle;
-        ctx.arc(0, 0, TILE * 0.55, ma, Math.PI * 2 - ma);
+        const mouthIndex = Math.floor(frameCount / 4) % PAC_MOUTH_FRAMES.length;
+        const ma = this.dir === DIR.NONE ? 0.04 : PAC_MOUTH_FRAMES[mouthIndex];
+        ctx.arc(0, 0, PAC_RADIUS, ma, Math.PI * 2 - ma);
         ctx.lineTo(0, 0);
         ctx.fill();
         ctx.restore();
@@ -428,7 +477,13 @@ class Ghost {
         const row = yToRow(this.y);
         if (inTunnel(col, row)) return SPEED.ghostTunnel;
         if (this.frightened) return SPEED.ghostFright;
-        return SPEED.ghost;
+        let s = SPEED.ghost * levelSpeedScale();
+        if (this.name === 'blinky') {
+            const remaining = totalDots - dotsEaten;
+            if (remaining <= 10) s += 0.35;
+            else if (remaining <= 20) s += 0.18;
+        }
+        return s;
     }
 
     getReleaseDots() {
@@ -539,6 +594,7 @@ class Ghost {
         const valid = [];
         for (const d of dirs) {
             if (d.x === -this.dir.x && d.y === -this.dir.y && (this.dir.x !== 0 || this.dir.y !== 0)) continue;
+            if (d === DIR.UP && isGhostNoUpTurn(col, row, this)) continue;
             if (canEnter(col + d.x, row + d.y, this)) valid.push(d);
         }
 
@@ -580,15 +636,19 @@ class Ghost {
         const pc = xToCol(pacman.x);
         const pr = yToRow(pacman.y);
         const pdir = pacman.dir;
+        const aheadTile = (n) => {
+            if (pdir === DIR.UP) return { col: pc - n, row: pr - n };
+            return { col: pc + pdir.x * n, row: pr + pdir.y * n };
+        };
 
         if (this.name === 'blinky') {
             return { col: pc, row: pr };
         }
         if (this.name === 'pinky') {
-            return { col: pc + pdir.x * 4, row: pr + pdir.y * 4 };
+            return aheadTile(4);
         }
         if (this.name === 'inky') {
-            const ahead = { col: pc + pdir.x * 2, row: pr + pdir.y * 2 };
+            const ahead = aheadTile(2);
             const blinky = ghosts[0];
             const bc = xToCol(blinky.x);
             const br = yToRow(blinky.y);
@@ -611,72 +671,73 @@ class Ghost {
     }
 
     draw() {
-        const flicker = this.frightened && frightTimer < FRIGHT_FLASH_TIME &&
-            Math.floor((FRIGHT_TIME - frightTimer) / (FRIGHT_FLASH_TIME / FRIGHT_FLASHES / 2)) % 2 === 0;
-        const bodyColor = this.eyes ? null :
-            (this.frightened ? (flicker ? '#FFFFFF' : '#2121DE') : this.color);
-        const r = TILE * 0.55;
+        const flashWindow = Math.min(FRIGHT_FLASH_TIME, activeFrightTime);
+        const flicker = this.frightened && flashWindow > 0 && frightTimer < flashWindow &&
+            Math.floor((activeFrightTime - frightTimer) / (flashWindow / FRIGHT_FLASHES / 2)) % 2 === 0;
+        const bodyColor = this.eyes ? null : (this.frightened ? (flicker ? '#FFFFFF' : FRIGHT_BLUE) : this.color);
+        const faceColor = this.frightened ? (flicker ? '#FF0000' : FRIGHT_FACE) : '#0000FF';
+        const x = Math.round(this.x);
+        const y = Math.round(this.y);
 
         if (!this.eyes) {
+            const halfW = GHOST_HALF_W;
+            const top = y - GHOST_TOP;
+            const sideTop = y - TILE * 0.22;
+            const footY = y + GHOST_BOTTOM;
+            const footHigh = y + TILE * 0.34;
+            const footLow = y + TILE * 0.72;
+            const wave = Math.floor(this.frame / GHOST_FOOT_RATE) % 2;
+
             ctx.fillStyle = bodyColor;
             ctx.beginPath();
-            ctx.arc(this.x, this.y - 1, r, Math.PI, 0);
-            ctx.lineTo(this.x + r, this.y + r - 1);
-            const wave = this.frame % 2;
-            const segments = 3;
-            const segW = (r * 2) / segments;
-            for (let i = 0; i < segments; i++) {
-                const fromX = this.x + r - i * segW;
-                const toX = fromX - segW;
-                if (i % 2 === wave) {
-                    ctx.lineTo(fromX - segW / 2, this.y + r - 1 - segW / 2);
-                } else {
-                    ctx.lineTo(fromX - segW / 2, this.y + r - 1 + segW / 3);
-                }
-                ctx.lineTo(toX, this.y + r - 1);
-            }
+            ctx.moveTo(x - halfW, footY);
+            ctx.lineTo(x - halfW, sideTop);
+            ctx.quadraticCurveTo(x - halfW, top, x, top);
+            ctx.quadraticCurveTo(x + halfW, top, x + halfW, sideTop);
+            ctx.lineTo(x + halfW, footY);
+            const footTips = wave === 0
+                ? [[x + 6, footHigh], [x + 2, footLow], [x - 2, footHigh], [x - 6, footLow], [x - halfW, footY]]
+                : [[x + 6, footLow], [x + 2, footHigh], [x - 2, footLow], [x - 6, footHigh], [x - halfW, footY]];
+            for (const [fx, fy] of footTips) ctx.lineTo(fx, fy);
             ctx.closePath();
             ctx.fill();
 
             if (this.frightened) {
-                ctx.fillStyle = flicker ? '#FF0000' : '#FFFFFF';
-                const eyeY = this.y - 2;
+                ctx.fillStyle = faceColor;
+                ctx.fillRect(x - 6, y - 5, 3, 3);
+                ctx.fillRect(x + 4, y - 5, 3, 3);
+                ctx.strokeStyle = faceColor;
+                ctx.lineWidth = 2;
                 ctx.beginPath();
-                ctx.arc(this.x - 3, eyeY, 1.8, 0, Math.PI * 2);
-                ctx.arc(this.x + 4, eyeY, 1.8, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.strokeStyle = flicker ? '#FF0000' : '#FFFFFF';
-                ctx.lineWidth = 1.2;
-                ctx.beginPath();
-                const my = this.y + 4;
-                ctx.moveTo(this.x - 5, my);
-                ctx.lineTo(this.x - 3, my - 2);
-                ctx.lineTo(this.x - 1, my);
-                ctx.lineTo(this.x + 1, my - 2);
-                ctx.lineTo(this.x + 3, my);
-                ctx.lineTo(this.x + 5, my - 2);
+                ctx.moveTo(x - 7, y + 5);
+                ctx.lineTo(x - 5, y + 3);
+                ctx.lineTo(x - 2, y + 5);
+                ctx.lineTo(x, y + 3);
+                ctx.lineTo(x + 2, y + 5);
+                ctx.lineTo(x + 5, y + 3);
+                ctx.lineTo(x + 7, y + 5);
                 ctx.stroke();
                 return;
             }
         }
 
         const eyeOffsets = {
-            left:  { px: -2, py: 0 },
-            right: { px: 2, py: 0 },
-            up:    { px: 0, py: -2 },
-            down:  { px: 0, py: 2 },
+            left:  { px: -2.8, py: 0 },
+            right: { px: 2.8, py: 0 },
+            up:    { px: 0, py: -2.8 },
+            down:  { px: 0, py: 2.8 },
             none:  { px: 0, py: 0 },
         };
         const off = eyeOffsets[this.dir.name] || eyeOffsets.none;
         ctx.fillStyle = '#FFFFFF';
         ctx.beginPath();
-        ctx.arc(this.x - 3, this.y - 2, 3, 0, Math.PI * 2);
-        ctx.arc(this.x + 4, this.y - 2, 3, 0, Math.PI * 2);
+        ctx.ellipse(x - 5, y - 4, 3.5, 4.8, 0, 0, Math.PI * 2);
+        ctx.ellipse(x + 5, y - 4, 3.5, 4.8, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = this.eyes ? '#FF0000' : '#0000FF';
+        ctx.fillStyle = '#0000FF';
         ctx.beginPath();
-        ctx.arc(this.x - 3 + off.px, this.y - 2 + off.py, 1.6, 0, Math.PI * 2);
-        ctx.arc(this.x + 4 + off.px, this.y - 2 + off.py, 1.6, 0, Math.PI * 2);
+        ctx.arc(x - 5 + off.px, y - 4 + off.py, 2, 0, Math.PI * 2);
+        ctx.arc(x + 5 + off.px, y - 4 + off.py, 2, 0, Math.PI * 2);
         ctx.fill();
     }
 }
@@ -686,7 +747,8 @@ function triggerFrightened() {
     for (const g of ghosts) {
         g.scare();
     }
-    frightTimer = FRIGHT_TIME;
+    activeFrightTime = frightTimeForLevel(level);
+    frightTimer = activeFrightTime;
     ghostsEatenInPower = 0;
     try { sound.startFright(); } catch (e) {}
 }
@@ -733,6 +795,7 @@ function checkCollisions() {
                 const pts = [200, 400, 800, 1600][ghostsEatenInPower];
                 ghostsEatenInPower++;
                 score += pts;
+                eatGhostPauseTimer = EAT_GHOST_PAUSE;
                 try { sound.eatGhost(); } catch (e) {}
                 showScorePopup(g.x, g.y, pts);
                 updateHUD();
@@ -838,6 +901,15 @@ function update(dt) {
 
     if (gameState === 'gameover') return;
 
+    if (eatGhostPauseTimer > 0) {
+        eatGhostPauseTimer -= dt;
+        for (let i = scorePopups.length - 1; i >= 0; i--) {
+            scorePopups[i].life -= dt * 0.8;
+            if (scorePopups[i].life <= 0) scorePopups.splice(i, 1);
+        }
+        return;
+    }
+
     updateModeTimers(dt);
 
     pacman.update();
@@ -914,32 +986,212 @@ function render() {
 }
 
 function drawMaze(colorOverride) {
-    const wallColor = colorOverride || '#2121DE';
+    const wallColor = colorOverride || '#2727FF';
+    const wallShadow = colorOverride ? colorOverride : '#00006F';
 
-    ctx.strokeStyle = wallColor;
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'square';
+    const drawMazeEdges = (color, width) => {
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'butt';
+        ctx.lineJoin = 'round';
 
-    ctx.beginPath();
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
+        const isOpenTile = (c, r) => {
+            if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return false;
             const t = grid[r][c];
-            if (t === T.WALL || t === T.DOOR) continue;
-            if (isOutside(c, r)) continue;
+            return t !== T.WALL && t !== T.DOOR && !isOutside(c, r);
+        };
 
-            const x = c * TILE;
-            const y = r * TILE;
-
-            if (isWallOrOutside(c, r - 1)) { ctx.moveTo(x, y); ctx.lineTo(x + TILE, y); }
-            if (isWallOrOutside(c, r + 1)) { ctx.moveTo(x, y + TILE); ctx.lineTo(x + TILE, y + TILE); }
-            if (isWallOrOutside(c - 1, r)) { ctx.moveTo(x, y); ctx.lineTo(x, y + TILE); }
-            if (isWallOrOutside(c + 1, r)) { ctx.moveTo(x + TILE, y); ctx.lineTo(x + TILE, y + TILE); }
+        const key = (x, y) => x + ',' + y;
+        const edges = [];
+        const addEdge = (sx, sy, ex, ey, nx, ny) => {
+            edges.push({ sx, sy, ex, ey, nx, ny, dx: ex - sx, dy: ey - sy });
+        };
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                if (!isOpenTile(c, r)) continue;
+                if (isWallOrOutside(c, r - 1)) addEdge(c, r, c + 1, r, 0, -1);
+                if (isWallOrOutside(c + 1, r) && !(r === 14 && c === COLS - 1)) addEdge(c + 1, r, c + 1, r + 1, 1, 0);
+                if (isWallOrOutside(c, r + 1)) addEdge(c + 1, r + 1, c, r + 1, 0, 1);
+                if (isWallOrOutside(c - 1, r) && !(r === 14 && c === 0)) addEdge(c, r + 1, c, r, -1, 0);
+            }
         }
-    }
-    ctx.stroke();
 
-    ctx.strokeStyle = '#FFB8DE';
-    ctx.lineWidth = 3;
+        const incident = new Map();
+        const vertexEdges = new Map();
+        const addIncident = (x, y) => {
+            const vertexKey = key(x, y);
+            incident.set(vertexKey, (incident.get(vertexKey) || 0) + 1);
+        };
+        edges.forEach((edge, index) => {
+            addIncident(edge.sx, edge.sy);
+            addIncident(edge.ex, edge.ey);
+            for (const vertexKey of [key(edge.sx, edge.sy), key(edge.ex, edge.ey)]) {
+                if (!vertexEdges.has(vertexKey)) vertexEdges.set(vertexKey, []);
+                vertexEdges.get(vertexKey).push(index);
+            }
+        });
+
+        const starts = new Map();
+        edges.forEach((edge, index) => {
+            const startKey = key(edge.sx, edge.sy);
+            if (!starts.has(startKey)) starts.set(startKey, []);
+            starts.get(startKey).push(index);
+        });
+
+        const used = new Set();
+        const contours = [];
+        const chooseNext = (from, candidates) => {
+            const prevDx = from.dx;
+            const prevDy = from.dy;
+            let best = candidates[0];
+            let bestScore = -Infinity;
+            for (const index of candidates) {
+                const next = edges[index];
+                const dot = prevDx * next.dx + prevDy * next.dy;
+                const cross = prevDx * next.dy - prevDy * next.dx;
+                const score = (cross < 0 ? 4 : 0) + (dot > 0 ? 2 : 0) + (cross === 0 ? 1 : 0);
+                if (score > bestScore) {
+                    best = index;
+                    bestScore = score;
+                }
+            }
+            return best;
+        };
+
+        for (let i = 0; i < edges.length; i++) {
+            if (used.has(i)) continue;
+            const contour = [];
+            let index = i;
+            while (index !== undefined && !used.has(index)) {
+                const edge = edges[index];
+                contour.push(edge);
+                used.add(index);
+                const nextEdges = (starts.get(key(edge.ex, edge.ey)) || []).filter((next) => !used.has(next));
+                index = nextEdges.length ? chooseNext(edge, nextEdges) : undefined;
+                if (index === i) break;
+            }
+            if (contour.length) contours.push(contour);
+        }
+
+        const turnsInto = (from, to) => from && to && (from.dx !== to.dx || from.dy !== to.dy);
+        const isSimpleVertex = (x, y) => (incident.get(key(x, y)) || 0) === 2;
+        const jointPoint = (from, to, x, y) => ({
+            x: x * TILE + (from.nx + to.nx) * MAZE_PATH_EXPAND,
+            y: y * TILE + (from.ny + to.ny) * MAZE_PATH_EXPAND,
+        });
+        const neighborAtVertex = (edge, x, y) => {
+            const candidates = vertexEdges.get(key(x, y)) || [];
+            for (const index of candidates) {
+                const other = edges[index];
+                if (other === edge) continue;
+                if (other.dx !== edge.dx || other.dy !== edge.dy) return other;
+            }
+            return null;
+        };
+        const pointOnEdge = (edge, atEnd, trim) => {
+            const x = (atEnd ? edge.ex : edge.sx) * TILE + edge.nx * MAZE_PATH_EXPAND;
+            const y = (atEnd ? edge.ey : edge.sy) * TILE + edge.ny * MAZE_PATH_EXPAND;
+            const sign = atEnd ? -1 : 1;
+            return {
+                x: x + edge.dx * trim * sign,
+                y: y + edge.dy * trim * sign,
+            };
+        };
+        const openEndpoint = (edge, atEnd) => {
+            const vx = atEnd ? edge.ex : edge.sx;
+            const vy = atEnd ? edge.ey : edge.sy;
+            const neighbor = neighborAtVertex(edge, vx, vy);
+            return neighbor ? jointPoint(edge, neighbor, vx, vy) : pointOnEdge(edge, atEnd, 0);
+        };
+
+        ctx.beginPath();
+        for (const contour of contours) {
+            const closed = contour.length > 1 &&
+                contour[0].sx === contour[contour.length - 1].ex &&
+                contour[0].sy === contour[contour.length - 1].ey;
+            const startEdge = contour[0];
+            const previousEdge = closed ? contour[contour.length - 1] : null;
+            const startTurn = turnsInto(previousEdge, startEdge) && isSimpleVertex(startEdge.sx, startEdge.sy);
+            let start;
+            if (turnsInto(previousEdge, startEdge) && !startTurn) {
+                start = jointPoint(previousEdge, startEdge, startEdge.sx, startEdge.sy);
+            } else if (!previousEdge) {
+                start = openEndpoint(startEdge, false);
+            } else {
+                start = pointOnEdge(startEdge, false, startTurn ? MAZE_CORNER_RADIUS : 0);
+            }
+            ctx.moveTo(start.x, start.y);
+
+            for (let i = 0; i < contour.length; i++) {
+                const edge = contour[i];
+                const next = i === contour.length - 1 ? (closed ? contour[0] : null) : contour[i + 1];
+                const turns = turnsInto(edge, next);
+                const simpleTurn = turns && isSimpleVertex(edge.ex, edge.ey);
+                let end;
+                if (turns && !simpleTurn) {
+                    end = jointPoint(edge, next, edge.ex, edge.ey);
+                } else if (!next) {
+                    end = openEndpoint(edge, true);
+                } else {
+                    end = pointOnEdge(edge, true, simpleTurn ? MAZE_CORNER_RADIUS : 0);
+                }
+                ctx.lineTo(end.x, end.y);
+                if (turns) {
+                    if (simpleTurn) {
+                        const turn = jointPoint(edge, next, edge.ex, edge.ey);
+                        const nextStart = pointOnEdge(next, false, MAZE_CORNER_RADIUS);
+                        ctx.quadraticCurveTo(turn.x, turn.y, nextStart.x, nextStart.y);
+                    }
+                }
+            }
+            if (closed) ctx.closePath();
+        }
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    const drawOuterEdge = (color, width, inset) => {
+        const gapTop = 13 * TILE;
+        const gapBottom = 16 * TILE;
+        const left = inset;
+        const right = CANVAS_W - inset;
+        const top = inset;
+        const bottom = CANVAS_H - inset;
+        const radius = Math.max(0, OUTER_MAZE_RADIUS - inset * 0.35);
+
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'butt';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(left + radius, top);
+        ctx.lineTo(right - radius, top);
+        ctx.quadraticCurveTo(right, top, right, top + radius);
+        ctx.lineTo(right, gapTop);
+        ctx.moveTo(right, gapBottom);
+        ctx.lineTo(right, bottom - radius);
+        ctx.quadraticCurveTo(right, bottom, right - radius, bottom);
+        ctx.lineTo(left + radius, bottom);
+        ctx.quadraticCurveTo(left, bottom, left, bottom - radius);
+        ctx.lineTo(left, gapBottom);
+        ctx.moveTo(left, gapTop);
+        ctx.lineTo(left, top + radius);
+        ctx.quadraticCurveTo(left, top, left + radius, top);
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    drawOuterEdge(wallShadow, 3, 0.75);
+    drawOuterEdge(wallColor, 1.5, 0.75);
+    drawOuterEdge(wallShadow, 3, 5.75);
+    drawOuterEdge(wallColor, 1.5, 5.75);
+    drawMazeEdges(wallShadow, 3);
+    drawMazeEdges(wallColor, 1.5);
+
+    ctx.strokeStyle = '#FFB8FF';
+    ctx.lineWidth = 2;
     ctx.lineCap = 'round';
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
@@ -959,14 +1211,12 @@ function drawDots() {
             const t = grid[r][c];
             if (t === T.DOT) {
                 ctx.fillStyle = '#FFB897';
-                ctx.beginPath();
-                ctx.arc(colToX(c), rowToY(r), 2, 0, Math.PI * 2);
-                ctx.fill();
+                ctx.fillRect(colToX(c) - 2, rowToY(r) - 2, 4, 4);
             } else if (t === T.PELLET) {
-                const pulse = 4 + Math.sin(frameCount * 0.2) * 1.5;
+                if (Math.floor(frameCount / 8) % 2 !== 0) continue;
                 ctx.fillStyle = '#FFB897';
                 ctx.beginPath();
-                ctx.arc(colToX(c), rowToY(r), pulse, 0, Math.PI * 2);
+                ctx.arc(colToX(c), rowToY(r), 6, 0, Math.PI * 2);
                 ctx.fill();
             }
         }
@@ -1230,25 +1480,95 @@ function hideOverlay() {
 }
 
 // ==================== INPUT ====================
+function restartGame() {
+    hideOverlay();
+    score = 0;
+    level = 1;
+    lives = 3;
+    initLevel(true);
+}
+
+function queueDirection(dir) {
+    if (!pacman) return;
+    if (gameState === 'gameover') {
+        restartGame();
+        return;
+    }
+    pacman.nextDir = dir;
+}
+
 function setupInput() {
     document.addEventListener('keydown', (e) => {
         if (!pacman) return;
         if (gameState === 'gameover' && (e.key === ' ' || e.key === 'Enter')) {
-            hideOverlay();
-            score = 0;
-            level = 1;
-            lives = 3;
-            initLevel(true);
+            restartGame();
             e.preventDefault();
             return;
         }
         switch (e.key) {
-            case 'ArrowUp': case 'w': case 'W': pacman.nextDir = DIR.UP; e.preventDefault(); break;
-            case 'ArrowDown': case 's': case 'S': pacman.nextDir = DIR.DOWN; e.preventDefault(); break;
-            case 'ArrowLeft': case 'a': case 'A': pacman.nextDir = DIR.LEFT; e.preventDefault(); break;
-            case 'ArrowRight': case 'd': case 'D': pacman.nextDir = DIR.RIGHT; e.preventDefault(); break;
+            case 'ArrowUp': case 'w': case 'W': queueDirection(DIR.UP); e.preventDefault(); break;
+            case 'ArrowDown': case 's': case 'S': queueDirection(DIR.DOWN); e.preventDefault(); break;
+            case 'ArrowLeft': case 'a': case 'A': queueDirection(DIR.LEFT); e.preventDefault(); break;
+            case 'ArrowRight': case 'd': case 'D': queueDirection(DIR.RIGHT); e.preventDefault(); break;
         }
     });
+
+    const swipeTarget = document.getElementById('game-wrap');
+    if (!swipeTarget) return;
+    let swipeStart = null;
+
+    const startSwipe = (clientX, clientY, pointerId) => {
+        swipeStart = { x: clientX, y: clientY, pointerId };
+    };
+    const endSwipe = (clientX, clientY) => {
+        if (!swipeStart) return;
+        const dx = clientX - swipeStart.x;
+        const dy = clientY - swipeStart.y;
+        swipeStart = null;
+        const absX = Math.abs(dx);
+        const absY = Math.abs(dy);
+        if (Math.max(absX, absY) < SWIPE_MIN_DISTANCE) return;
+        if (absX > absY * SWIPE_AXIS_RATIO) {
+            queueDirection(dx > 0 ? DIR.RIGHT : DIR.LEFT);
+        } else if (absY > absX * SWIPE_AXIS_RATIO) {
+            queueDirection(dy > 0 ? DIR.DOWN : DIR.UP);
+        }
+    };
+    const cancelSwipe = () => {
+        swipeStart = null;
+    };
+
+    if (window.PointerEvent) {
+        swipeTarget.addEventListener('pointerdown', (e) => {
+            startSwipe(e.clientX, e.clientY, e.pointerId);
+            swipeTarget.setPointerCapture?.(e.pointerId);
+            e.preventDefault();
+        });
+        swipeTarget.addEventListener('pointerup', (e) => {
+            if (!swipeStart || swipeStart.pointerId !== e.pointerId) return;
+            endSwipe(e.clientX, e.clientY);
+            e.preventDefault();
+        });
+        swipeTarget.addEventListener('pointercancel', cancelSwipe);
+        swipeTarget.addEventListener('lostpointercapture', cancelSwipe);
+    } else {
+        swipeTarget.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) {
+                cancelSwipe();
+                return;
+            }
+            const touch = e.touches[0];
+            startSwipe(touch.clientX, touch.clientY, null);
+            e.preventDefault();
+        }, { passive: false });
+        swipeTarget.addEventListener('touchend', (e) => {
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            endSwipe(touch.clientX, touch.clientY);
+            e.preventDefault();
+        }, { passive: false });
+        swipeTarget.addEventListener('touchcancel', cancelSwipe);
+    }
 }
 
 // ==================== GAME LOOP ====================
@@ -1294,47 +1614,42 @@ class SoundManager {
         gain.connect(this.ctx.destination);
     }
 
+    _tone(freq, start, dur, vol, type, endFreq) {
+        if (freq <= 0) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = type || 'square';
+        osc.frequency.setValueAtTime(freq, start);
+        if (endFreq) osc.frequency.exponentialRampToValueAtTime(endFreq, start + dur);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(vol, start + Math.min(0.006, dur * 0.25));
+        gain.gain.setValueAtTime(vol, start + dur * 0.55);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(start);
+        osc.stop(start + dur + 0.01);
+    }
+
     waka() {
         if (!this.enabled) return;
         const t = this.ctx.currentTime;
-        const dur = 0.07;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'square';
-        if (this.wakaToggle) {
-            osc.frequency.setValueAtTime(280, t);
-            osc.frequency.linearRampToValueAtTime(520, t + dur * 0.5);
-            osc.frequency.linearRampToValueAtTime(280, t + dur);
-        } else {
-            osc.frequency.setValueAtTime(520, t);
-            osc.frequency.linearRampToValueAtTime(280, t + dur * 0.5);
-            osc.frequency.linearRampToValueAtTime(520, t + dur);
-        }
-        gain.gain.setValueAtTime(0.12, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-        osc.start(t);
-        osc.stop(t + dur);
+        const dur = 0.042;
+        const a = this.wakaToggle ? 390 : 520;
+        const b = this.wakaToggle ? 520 : 390;
+        this._tone(a, t, dur, 0.075, 'square', b);
+        this._tone(b * 0.5, t + dur * 0.35, dur * 0.75, 0.035, 'square', a * 0.5);
         this.wakaToggle = !this.wakaToggle;
     }
 
     eatGhost() {
         if (!this.enabled) return;
-        const notes = [262, 330, 392, 523, 659, 784, 988, 1175];
-        const stepDur = 0.035;
+        const notes = [392, 523, 659, 784, 1047, 1319];
+        const stepDur = 0.045;
         for (let i = 0; i < notes.length; i++) {
             const t = this.ctx.currentTime + i * stepDur;
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'square';
-            osc.frequency.setValueAtTime(notes[i], t);
-            gain.gain.setValueAtTime(0.15, t);
-            gain.gain.exponentialRampToValueAtTime(0.001, t + stepDur * 1.5);
-            osc.connect(gain);
-            gain.connect(this.ctx.destination);
-            osc.start(t);
-            osc.stop(t + stepDur * 1.5);
+            this._tone(notes[i], t, stepDur * 1.25, 0.12, 'square');
+            this._tone(notes[i] * 0.5, t, stepDur, 0.035, 'square');
         }
     }
 
@@ -1363,41 +1678,14 @@ class SoundManager {
     death() {
         if (!this.enabled) return;
         const t0 = this.ctx.currentTime;
-        // The arcade death is a series of descending downward "swoops", each
-        // starting a little lower than the last, not one smooth glide.
-        const swoops = 8;
-        let f = 1000;
+        const starts = [1245, 1175, 1047, 988, 880, 784, 698, 622, 523, 440];
         let t = 0;
-        for (let i = 0; i < swoops; i++) {
-            const dur = 0.13;
-            const start = t0 + t;
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'square';
-            osc.frequency.setValueAtTime(f, start);
-            osc.frequency.exponentialRampToValueAtTime(f * 0.5, start + dur);
-            gain.gain.setValueAtTime(0.12, start);
-            gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-            osc.connect(gain);
-            gain.connect(this.ctx.destination);
-            osc.start(start);
-            osc.stop(start + dur);
-            f *= 0.82;
+        for (let i = 0; i < starts.length; i++) {
+            const dur = 0.09 + i * 0.008;
+            this._tone(starts[i], t0 + t, dur, 0.105, 'square', Math.max(70, starts[i] * 0.56));
             t += dur * 0.92;
         }
-        // final low blip
-        const start = t0 + t;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(f, start);
-        osc.frequency.exponentialRampToValueAtTime(60, start + 0.3);
-        gain.gain.setValueAtTime(0.12, start);
-        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-        osc.start(start);
-        osc.stop(start + 0.3);
+        this._tone(196, t0 + t + 0.03, 0.24, 0.09, 'square', 55);
     }
 
     playIntro() {
@@ -1423,18 +1711,8 @@ class SoundManager {
         for (const [freq, dur] of melody) {
             if (freq > 0) {
                 const start = this.ctx.currentTime + t;
-                const osc = this.ctx.createOscillator();
-                const gain = this.ctx.createGain();
-                osc.type = 'square';
-                osc.frequency.setValueAtTime(freq, start);
-                gain.gain.setValueAtTime(0, start);
-                gain.gain.linearRampToValueAtTime(0.1, start + 0.01);
-                gain.gain.setValueAtTime(0.1, start + dur * 0.7);
-                gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-                osc.connect(gain);
-                gain.connect(this.ctx.destination);
-                osc.start(start);
-                osc.stop(start + dur);
+                this._tone(freq, start, dur * 0.9, 0.085, 'square');
+                if (freq >= N.E5) this._tone(freq / 2, start, dur * 0.85, 0.035, 'square');
             }
             t += dur;
         }
@@ -1492,36 +1770,45 @@ class SoundManager {
         this.sirenNodes = this._stopLoop(this.sirenNodes);
         const t = this.ctx.currentTime;
         const lvl = Math.max(0, Math.min(3, this.sirenLevel));
-        const baseFreq = [110, 125, 142, 162][lvl];
-        const modRate = [5.0, 5.6, 6.3, 7.2][lvl];
-        const modDepth = baseFreq * 0.5;
+        const baseFreq = [95, 108, 124, 142][lvl];
+        const modRate = [4.5, 5.1, 5.8, 6.6][lvl];
+        const modDepth = baseFreq * 0.72;
 
         const carrier = this.ctx.createOscillator();
+        const sub = this.ctx.createOscillator();
         const lfo = this.ctx.createOscillator();
         const lfoGain = this.ctx.createGain();
+        const subLfoGain = this.ctx.createGain();
         const sirenGain = this.ctx.createGain();
 
         carrier.type = 'square';
         carrier.frequency.value = baseFreq;
+        sub.type = 'square';
+        sub.frequency.value = baseFreq / 2;
 
         // A rising sawtooth ramp that snaps back each cycle reads as a siren,
         // unlike a smooth sine vibrato. Rate/pitch climb as dots are cleared.
         lfo.type = 'sawtooth';
         lfo.frequency.value = modRate;
         lfoGain.gain.value = modDepth;
+        subLfoGain.gain.value = baseFreq * 0.2;
 
         lfo.connect(lfoGain);
         lfoGain.connect(carrier.frequency);
+        lfo.connect(subLfoGain);
+        subLfoGain.connect(sub.frequency);
 
-        sirenGain.gain.value = 0.05;
+        sirenGain.gain.value = 0.038;
 
         carrier.connect(sirenGain);
+        sub.connect(sirenGain);
         sirenGain.connect(this.ctx.destination);
 
         carrier.start(t);
+        sub.start(t);
         lfo.start(t);
 
-        this.sirenNodes = { oscs: [carrier, lfo], gains: [sirenGain] };
+        this.sirenNodes = { oscs: [carrier, sub, lfo], gains: [sirenGain] };
     }
 
     stopSiren() {
@@ -1534,29 +1821,35 @@ class SoundManager {
         const t = this.ctx.currentTime;
 
         const carrier = this.ctx.createOscillator();
+        const pulse = this.ctx.createOscillator();
         const lfo = this.ctx.createOscillator();
         const lfoGain = this.ctx.createGain();
         const gain = this.ctx.createGain();
 
         carrier.type = 'square';
-        carrier.frequency.value = 200;
+        carrier.frequency.value = 185;
+        pulse.type = 'square';
+        pulse.frequency.value = 92;
 
         lfo.type = 'square';
-        lfo.frequency.value = 9;
-        lfoGain.gain.value = 80;
+        lfo.frequency.value = 7.5;
+        lfoGain.gain.value = 70;
 
         lfo.connect(lfoGain);
         lfoGain.connect(carrier.frequency);
+        lfoGain.connect(pulse.frequency);
 
-        gain.gain.value = 0.05;
+        gain.gain.value = 0.044;
 
         carrier.connect(gain);
+        pulse.connect(gain);
         gain.connect(this.ctx.destination);
 
         carrier.start(t);
+        pulse.start(t);
         lfo.start(t);
 
-        this.frightNodes = { oscs: [carrier, lfo], gains: [gain] };
+        this.frightNodes = { oscs: [carrier, pulse, lfo], gains: [gain] };
     }
 
     stopFrightenedLoop() {
@@ -1567,17 +1860,8 @@ class SoundManager {
         if (!this.enabled) return;
         this.stopSiren();
         const t = this.ctx.currentTime;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(180, t);
-        osc.frequency.exponentialRampToValueAtTime(360, t + 0.15);
-        gain.gain.setValueAtTime(0.1, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-        osc.start(t);
-        osc.stop(t + 0.2);
+        this._tone(156, t, 0.09, 0.11, 'square', 330);
+        this._tone(312, t + 0.06, 0.12, 0.085, 'square', 210);
     }
 
     updateSiren(eaten, total) {
