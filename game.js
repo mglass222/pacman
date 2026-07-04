@@ -85,6 +85,8 @@ const GHOST_BOTTOM = TILE * 0.68;
 const MAZE_PATH_EXPAND = TILE * 0.25;
 const MAZE_CORNER_RADIUS = TILE * 0.24;
 const OUTER_MAZE_RADIUS = TILE * 0.48;
+const SWIPE_MIN_DISTANCE = 24;
+const SWIPE_AXIS_RATIO = 1.25;
 
 const GHOST_COLORS = {
     blinky: '#FF0000',
@@ -1478,25 +1480,95 @@ function hideOverlay() {
 }
 
 // ==================== INPUT ====================
+function restartGame() {
+    hideOverlay();
+    score = 0;
+    level = 1;
+    lives = 3;
+    initLevel(true);
+}
+
+function queueDirection(dir) {
+    if (!pacman) return;
+    if (gameState === 'gameover') {
+        restartGame();
+        return;
+    }
+    pacman.nextDir = dir;
+}
+
 function setupInput() {
     document.addEventListener('keydown', (e) => {
         if (!pacman) return;
         if (gameState === 'gameover' && (e.key === ' ' || e.key === 'Enter')) {
-            hideOverlay();
-            score = 0;
-            level = 1;
-            lives = 3;
-            initLevel(true);
+            restartGame();
             e.preventDefault();
             return;
         }
         switch (e.key) {
-            case 'ArrowUp': case 'w': case 'W': pacman.nextDir = DIR.UP; e.preventDefault(); break;
-            case 'ArrowDown': case 's': case 'S': pacman.nextDir = DIR.DOWN; e.preventDefault(); break;
-            case 'ArrowLeft': case 'a': case 'A': pacman.nextDir = DIR.LEFT; e.preventDefault(); break;
-            case 'ArrowRight': case 'd': case 'D': pacman.nextDir = DIR.RIGHT; e.preventDefault(); break;
+            case 'ArrowUp': case 'w': case 'W': queueDirection(DIR.UP); e.preventDefault(); break;
+            case 'ArrowDown': case 's': case 'S': queueDirection(DIR.DOWN); e.preventDefault(); break;
+            case 'ArrowLeft': case 'a': case 'A': queueDirection(DIR.LEFT); e.preventDefault(); break;
+            case 'ArrowRight': case 'd': case 'D': queueDirection(DIR.RIGHT); e.preventDefault(); break;
         }
     });
+
+    const swipeTarget = document.getElementById('game-wrap');
+    if (!swipeTarget) return;
+    let swipeStart = null;
+
+    const startSwipe = (clientX, clientY, pointerId) => {
+        swipeStart = { x: clientX, y: clientY, pointerId };
+    };
+    const endSwipe = (clientX, clientY) => {
+        if (!swipeStart) return;
+        const dx = clientX - swipeStart.x;
+        const dy = clientY - swipeStart.y;
+        swipeStart = null;
+        const absX = Math.abs(dx);
+        const absY = Math.abs(dy);
+        if (Math.max(absX, absY) < SWIPE_MIN_DISTANCE) return;
+        if (absX > absY * SWIPE_AXIS_RATIO) {
+            queueDirection(dx > 0 ? DIR.RIGHT : DIR.LEFT);
+        } else if (absY > absX * SWIPE_AXIS_RATIO) {
+            queueDirection(dy > 0 ? DIR.DOWN : DIR.UP);
+        }
+    };
+    const cancelSwipe = () => {
+        swipeStart = null;
+    };
+
+    if (window.PointerEvent) {
+        swipeTarget.addEventListener('pointerdown', (e) => {
+            startSwipe(e.clientX, e.clientY, e.pointerId);
+            swipeTarget.setPointerCapture?.(e.pointerId);
+            e.preventDefault();
+        });
+        swipeTarget.addEventListener('pointerup', (e) => {
+            if (!swipeStart || swipeStart.pointerId !== e.pointerId) return;
+            endSwipe(e.clientX, e.clientY);
+            e.preventDefault();
+        });
+        swipeTarget.addEventListener('pointercancel', cancelSwipe);
+        swipeTarget.addEventListener('lostpointercapture', cancelSwipe);
+    } else {
+        swipeTarget.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) {
+                cancelSwipe();
+                return;
+            }
+            const touch = e.touches[0];
+            startSwipe(touch.clientX, touch.clientY, null);
+            e.preventDefault();
+        }, { passive: false });
+        swipeTarget.addEventListener('touchend', (e) => {
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            endSwipe(touch.clientX, touch.clientY);
+            e.preventDefault();
+        }, { passive: false });
+        swipeTarget.addEventListener('touchcancel', cancelSwipe);
+    }
 }
 
 // ==================== GAME LOOP ====================
