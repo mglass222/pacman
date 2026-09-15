@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>After Hours — Sound Studio</title>
+    <link rel="stylesheet" href="styles.css?v=4">
+    <style>
+        .studio { max-width: 820px; margin: 0 auto; padding: 40px 24px; }
+        .studio h1 { font: 500 44px 'Space Grotesk', sans-serif; letter-spacing: -2px; margin: 26px 0 12px; }
+        .studio p { color: var(--muted); line-height: 1.7; font-size: 14px; }
+        .sound-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 28px 0; }
+        .sound-grid button { text-align: left; padding: 22px; background: #131c29; color: var(--text); border: 1px solid #303b4e; border-radius: 10px; }
+        .sound-grid button:hover { border-color: var(--yellow); }
+        .sound-grid strong { display: block; color: var(--yellow); margin-bottom: 8px; font-size: 15px; }
+        .sound-grid span { color: var(--muted); font-size: 12px; }
+        .studio-actions { display: flex; align-items: center; gap: 20px; }
+        #stop { padding: 12px 20px; border: 0; background: var(--yellow); color: #161b21; border-radius: 6px; }
+        .studio a { color: var(--text); font-size: 13px; }
+        #sound-status { margin-top: 20px; }
+        @media(max-width: 480px) { .sound-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <main class="studio">
+        <a class="brand" href="./"><span class="mini-pac" aria-hidden="true"></span>PAC-MAN <span class="brand-edition">/ AFTER HOURS</span></a>
+        <h1>The classics. Remixed.</h1>
+        <p>Same arcade cues, a warmer synth voice. Tap an effect to listen.<br>Each selection replaces the previous sound; loop previews last four seconds.</p>
+        <div class="sound-grid">
+            <button data-effect="waka"><strong>01 / Chomp</strong><span>The familiar waka, with a rounded, percussive bite.</span></button>
+            <button data-effect="startFright"><strong>02 / Power pellet</strong><span>A rising energy sweep with a bright finish.</span></button>
+            <button data-effect="eatGhost"><strong>03 / Ghost capture</strong><span>A quick upward cascade with a glassy shimmer.</span></button>
+            <button data-effect="eatFruit"><strong>04 / Fruit bonus</strong><span>A three-note chime with a light echo.</span></button>
+            <button data-effect="startSiren"><strong>05 / The chase</strong><span>A low, rounded siren that builds in urgency.</span></button>
+            <button data-effect="startFrightenedLoop"><strong>06 / Tables turned</strong><span>A liquid warble for the power-pellet window.</span></button>
+            <button data-effect="death"><strong>07 / Life lost</strong><span>The classic downward tumble, with a soft bass landing.</span></button>
+            <button data-effect="playIntro"><strong>08 / Ready up</strong><span>The familiar opening phrase on a layered synth bell.</span></button>
+            <button data-effect="levelComplete"><strong>09 / Maze cleared</strong><span>A bright victory phrase with a little space to ring.</span></button>
+        </div>
+        <div class="studio-actions"><button id="stop">Stop sound</button><a href="./">Back to the game ↗</a></div>
+        <p id="sound-status" role="status">Ready to listen.</p>
+    </main>
+    <script src="sound.js?v=1"></script>
+    <script>
+        let previewSound;
+        let previewTimers = [];
+        const status = document.getElementById('sound-status');
+        function stopPreview() {
+            previewTimers.forEach(clearTimeout);
+            previewTimers = [];
+            if (previewSound && previewSound.ctx) previewSound.ctx.close().catch(() => {});
+            previewSound = null;
+            status.textContent = 'Sound stopped.';
+        }
+        document.querySelectorAll('[data-effect]').forEach(button => {
+            button.addEventListener('click', () => {
+                stopPreview();
+                previewSound = new SoundManager();
+                if (!previewSound.enabled) { status.textContent = 'Audio is unavailable in this browser.'; return; }
+                const effect = button.dataset.effect;
+                previewSound[effect]();
+                status.textContent = 'Playing ' + button.querySelector('strong').textContent.split(' / ')[1] + '.';
+                if (effect === 'waka') {
+                    for (let i = 1; i < 10; i++) previewTimers.push(setTimeout(() => previewSound.waka(), i * 125));
+                }
+                if (effect === 'startSiren' || effect === 'startFrightenedLoop') {
+                    previewTimers.push(setTimeout(() => {
+                        previewSound.stopSiren();
+                        previewSound.stopFrightenedLoop();
+                        status.textContent = 'Loop preview finished.';
+                    }, 4000));
+                }
+            });
+        });
+        document.getElementById('stop').addEventListener('click', stopPreview);
+        document.addEventListener('visibilitychange', () => { if (document.hidden) stopPreview(); });
+        window.addEventListener('pagehide', stopPreview);
+    </script>
+</body>
+</html>

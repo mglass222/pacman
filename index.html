@@ -3,39 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PAC-MAN</title>
-    <link rel="stylesheet" href="styles.css?v=3">
+    <meta name="theme-color" content="#090d14">
+    <meta name="description" content="The maze you know. A new kind of glow. Play a modern, neon-lit tribute to the arcade classic.">
+    <title>PAC-MAN — After Hours</title>
+    <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
-    <div id="game-container">
-        <div id="loading-screen">
-            <h1 id="title">PAC-MAN</h1>
-            <p id="loading-text">INSERT COIN</p>
-            <button id="start-btn">PLAY</button>
-            <p id="controls-hint">Arrow Keys or WASD to move</p>
-        </div>
-        <div id="game-wrap" class="hidden">
-            <div id="hud">
-                <div id="score-display">
-                    <span class="label">SCORE</span>
-                    <span id="score">0</span>
+    <main class="arcade">
+        <header class="masthead">
+            <a class="brand" href="./" aria-label="Pac-Man home"><span class="mini-pac" aria-hidden="true"></span> PAC-MAN <span class="brand-edition">/ AFTER HOURS</span></a>
+            <span class="arcade-status"><i></i> THE ARCADE IS OPEN</span>
+        </header>
+        <div class="arcade-layout">
+            <aside class="intro">
+                <div class="eyebrow"><span>01</span> THE CLASSICS, RECHARGED</div>
+                <h1>Same maze.<br> New <em>energy.</em></h1>
+                <p class="intro-copy">A familiar chase. A little more glow.<br>Meet your next high score.</p>
+                <div class="cast" aria-label="Pac-Man, Blinky, Pinky, Inky, and Clyde">
+                    <span class="hero-pac"></span><span class="cast-dot"></span><span class="cast-dot"></span>
+                    <span class="ghost red"><i></i><i></i></span><span class="ghost pink"><i></i><i></i></span><span class="ghost cyan"><i></i><i></i></span><span class="ghost orange"><i></i><i></i></span>
                 </div>
-                <div id="level-display">
-                    <span class="label">LEVEL</span>
-                    <span id="level">1</span>
+                <section class="how-to" aria-labelledby="how-title">
+                    <h2 id="how-title">THE MISSION</h2>
+                    <p>Clear the dots. Dodge the ghosts.<br>Grab a power pellet. Turn the tables.</p>
+                    <div class="points"><span><i class="dot-sample"></i> DOT <b>10</b></span><span><i class="power-sample"></i> POWER <b>50</b></span></div>
+                </section>
+                <div class="controls-guide"><div class="key-row"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>or <strong>W A S D</strong></span></div><p>Move through the maze <span>·</span> Swipe on touch</p><p><kbd>P</kbd> or tap maze to pause <span>·</span> <kbd>M</kbd> Sound</p></div>
+                <div class="classic-note"><span>1980 → NOW</span><p>Old-school instinct. After-hours atmosphere.</p></div>
+            </aside>
+            <section id="game-container" aria-label="Pac-Man arcade game">
+                <div class="cabinet-top"><span><i></i> CLASSIC MODE</span><div class="game-tools"><button id="sound-btn" aria-label="Mute sound" aria-pressed="false">SOUND ON</button><button id="pause-btn" disabled aria-label="Pause game">Ⅱ</button></div></div>
+                <div id="game-wrap">
+                    <div id="hud">
+                        <div id="score-display"><span class="label">YOUR SCORE</span><span id="score">000000</span></div>
+                        <div class="best-display"><span class="label">PERSONAL BEST</span><span id="best">000000</span></div>
+                        <div id="level-display"><span class="label">LEVEL</span><span id="level">01</span></div>
+                    </div>
+                    <div class="board-shell">
+                        <canvas id="game-canvas" width="448" height="496" aria-label="Pac-Man maze. Use arrow keys, WASD, or swipe to move."></canvas>
+                        <div id="loading-screen"><div class="launch-card"><span class="eyebrow">ONE MORE GAME?</span><h2>Enter the maze.</h2><p>The chase starts here.</p><button id="start-btn">LET’S PLAY <span>↗</span></button><span class="start-hint">PRESS ENTER TO START</span></div></div>
+                        <div id="overlay" class="hidden"><div class="launch-card"><div id="overlay-text"></div><button id="resume-btn">BACK TO THE CHASE <span>↗</span></button><button id="overlay-sound-btn" class="quiet-button" aria-pressed="false">SOUND ON</button></div></div>
+                    </div>
+                    <div class="cabinet-bottom"><div id="lives-display"><div id="lives" aria-label="Spare lives"></div><span class="label">EXTRA LIVES</span></div><div class="bonus-display"><span class="label">LEVEL BONUS</span><div id="fruit-row"></div></div></div>
                 </div>
-                <div id="lives-display">
-                    <span class="label">LIVES</span>
-                    <div id="lives"></div>
-                </div>
-            </div>
-            <canvas id="game-canvas" width="448" height="496"></canvas>
-            <div id="fruit-row"></div>
+                <div class="maze-progress"><div id="progress-fill"></div></div>
+                <div class="cabinet-caption"><span id="game-status" role="status">READY FOR A FRESH RUN</span><span id="dots-remaining">248 DOTS TO GO</span></div>
+                <p class="touch-hint">SWIPE TO MOVE · TAP THE MAZE TO PAUSE</p>
+            </section>
         </div>
-        <div id="overlay" class="hidden">
-            <div id="overlay-text"></div>
-        </div>
-    </div>
-    <script src="game.js?v=36"></script>
+        <footer><span>A LOVE LETTER TO THE ARCADE.</span><span>NO COINS. JUST ONE MORE TRY. <i>✦</i></span></footer>
+    </main>
+    <script src="sound.js?v=1"></script>
+    <script src="game.js?v=39"></script>
 </body>
 </html>

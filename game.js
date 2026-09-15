@@ -76,7 +76,7 @@ const EAT_GHOST_PAUSE = 0.45;
 const GHOST_NO_UP_TURNS = new Set(['12,11', '15,11', '12,23', '15,23']);
 const PAC_MOUTH_FRAMES = [0.06, 0.28, 0.52, 0.28];
 const GHOST_FOOT_RATE = 8;
-const FRIGHT_BLUE = '#0000BB';
+const FRIGHT_BLUE = '#2861df';
 const FRIGHT_FACE = '#FFB897';
 const PAC_RADIUS = TILE * 0.72;
 const GHOST_HALF_W = TILE * 0.68;
@@ -89,10 +89,10 @@ const SWIPE_MIN_DISTANCE = 24;
 const SWIPE_AXIS_RATIO = 1.25;
 
 const GHOST_COLORS = {
-    blinky: '#FF0000',
-    pinky:  '#FFB8FF',
-    inky:   '#00FFFF',
-    clyde:  '#FFB852',
+    blinky: '#ff526b',
+    pinky:  '#efa0dc',
+    inky:   '#5edfe8',
+    clyde:  '#ffa95f',
 };
 
 const SCATTER_TARGET = {
@@ -171,6 +171,19 @@ let fruit;
 let sound;
 let mazeCanvas, mazeCtx;
 let running = false;
+let paused = false;
+let muted = false;
+let renderScale = 2;
+let bestScore = 0;
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+try {
+    const storedBest = Number(localStorage.getItem('pacman-after-hours-best'));
+    if (Number.isFinite(storedBest)) bestScore = Math.max(0, storedBest);
+} catch (_) {}
+function saveBest() {
+    try { localStorage.setItem('pacman-after-hours-best', String(bestScore)); } catch (_) {}
+}
+window.addEventListener('pagehide', saveBest);
 let lastTime = 0;
 let accumulator = 0;
 const FRAME_TIME = 1000 / 60;
@@ -180,32 +193,83 @@ window.addEventListener('load', () => {
     canvas = document.getElementById('game-canvas');
     ctx = canvas.getContext('2d');
     document.getElementById('start-btn').addEventListener('click', startGame);
+    document.getElementById('pause-btn').addEventListener('click', togglePause);
+    document.getElementById('sound-btn').addEventListener('click', toggleSound);
+    document.getElementById('overlay-sound-btn').addEventListener('click', toggleSound);
+    document.getElementById('resume-btn').addEventListener('click', () => {
+        if (gameState === 'gameover') restartGame();
+        else togglePause();
+    });
     setupInput();
+    score = 0; level = 1; lives = 3;
+    initLevel(false);
+    gameState = 'title';
     fitToWindow();
     window.addEventListener('resize', fitToWindow);
+    document.addEventListener('fullscreenchange', fitToWindow);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && running && !paused && gameState !== 'gameover') togglePause();
+    });
 });
 
-// Scale the whole game up to fill the browser's vertical height while keeping
-// its aspect ratio (and not overflowing horizontally on narrow windows).
+// CSS owns the layout; render at display resolution while retaining arcade coordinates.
 function fitToWindow() {
-    const container = document.getElementById('game-container');
-    if (!container) return;
-    const w = container.offsetWidth;
-    const h = container.offsetHeight;
-    if (!w || !h) return;
-    const scale = Math.min(window.innerWidth / w, window.innerHeight / h) * 0.98;
-    container.style.transform = 'scale(' + scale + ')';
+    if (!canvas) return;
+    renderScale = Math.min(3, Math.max(1, window.devicePixelRatio || 1) * canvas.clientWidth / CANVAS_W);
+    canvas.width = Math.round(CANVAS_W * renderScale);
+    canvas.height = Math.round(CANVAS_H * renderScale);
+    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    renderMazeOffscreen();
+    render();
+}
+
+function syncAudio() {
+    if (!sound || !sound.ctx) return;
+    const action = muted || paused ? sound.ctx.suspend() : sound.ctx.resume();
+    if (action) action.catch(() => {});
+}
+
+function toggleSound() {
+    muted = !muted;
+    const button = document.getElementById('sound-btn');
+    button.textContent = muted ? 'SOUND OFF' : 'SOUND ON';
+    button.setAttribute('aria-pressed', String(muted));
+    button.setAttribute('aria-label', muted ? 'Enable sound' : 'Mute sound');
+    document.getElementById('overlay-sound-btn').textContent = muted ? 'SOUND OFF' : 'SOUND ON';
+    document.getElementById('overlay-sound-btn').setAttribute('aria-pressed', String(muted));
+    syncAudio();
+}
+
+function togglePause() {
+    if (!running || gameState === 'gameover') return;
+    paused = !paused;
+    const button = document.getElementById('pause-btn');
+    button.textContent = paused ? '▶' : 'Ⅱ';
+    button.setAttribute('aria-label', paused ? 'Resume game' : 'Pause game');
+    if (paused) showOverlay('Take a breather.', 'Your maze will be right here.');
+    else hideOverlay();
+    document.getElementById('game-status').textContent = paused ? 'ON A QUICK BREAK' : 'THE CHASE IS ON';
+    syncAudio();
 }
 
 function startGame() {
     document.getElementById('loading-screen').classList.add('hidden');
-    document.getElementById('game-wrap').classList.remove('hidden');
-    fitToWindow();
+    document.body.classList.add('is-playing');
+    // Start from the player's gesture. Embedded/unsupported browsers still get
+    // the same distraction-free layout filling their available viewport.
+    try {
+        const fullscreen = document.documentElement?.requestFullscreen?.();
+        if (fullscreen) fullscreen.catch(() => {});
+    } catch (_) {}
+    document.getElementById('pause-btn').disabled = false;
+    document.getElementById('start-btn').blur();
     sound = new SoundManager();
+    syncAudio();
     score = 0;
     level = 1;
     lives = 3;
     initLevel(true);
+    fitToWindow();
     if (!running) {
         running = true;
         lastTime = performance.now();
@@ -216,6 +280,7 @@ function startGame() {
 function initLevel(playIntro) {
     parseMaze();
     renderMazeOffscreen();
+    scorePopups.length = 0;
     dotsEaten = 0;
     globalDotCounter = 0;
     scatterChaseIndex = 0;
@@ -415,7 +480,13 @@ class PacMan {
         else if (this.dir === DIR.LEFT) rot = Math.PI;
         else if (this.dir === DIR.UP) rot = -Math.PI / 2;
         ctx.rotate(rot);
-        ctx.fillStyle = '#FFFF00';
+        const body = ctx.createRadialGradient(-4, -5, 1, 0, 0, PAC_RADIUS);
+        body.addColorStop(0, '#fffbc2');
+        body.addColorStop(0.45, '#ffe858');
+        body.addColorStop(1, '#efb51f');
+        ctx.fillStyle = body;
+        ctx.shadowColor = '#ffdf47';
+        ctx.shadowBlur = 10;
         ctx.beginPath();
         const mouthIndex = Math.floor(frameCount / 4) % PAC_MOUTH_FRAMES.length;
         const ma = this.dir === DIR.NONE ? 0.04 : PAC_MOUTH_FRAMES[mouthIndex];
@@ -676,8 +747,9 @@ class Ghost {
             Math.floor((activeFrightTime - frightTimer) / (flashWindow / FRIGHT_FLASHES / 2)) % 2 === 0;
         const bodyColor = this.eyes ? null : (this.frightened ? (flicker ? '#FFFFFF' : FRIGHT_BLUE) : this.color);
         const faceColor = this.frightened ? (flicker ? '#FF0000' : FRIGHT_FACE) : '#0000FF';
-        const x = Math.round(this.x);
-        const y = Math.round(this.y);
+        ctx.save();
+        const x = this.x;
+        const y = this.y;
 
         if (!this.eyes) {
             const halfW = GHOST_HALF_W;
@@ -688,7 +760,13 @@ class Ghost {
             const footLow = y + TILE * 0.72;
             const wave = Math.floor(this.frame / GHOST_FOOT_RATE) % 2;
 
-            ctx.fillStyle = bodyColor;
+            const body = ctx.createRadialGradient(x - 4, y - 8, 0, x, y, 21);
+            body.addColorStop(0, '#ffffff');
+            body.addColorStop(0.28, bodyColor);
+            body.addColorStop(1, this.frightened ? '#142957' : '#222b43');
+            ctx.fillStyle = body;
+            ctx.shadowColor = bodyColor;
+            ctx.shadowBlur = 8;
             ctx.beginPath();
             ctx.moveTo(x - halfW, footY);
             ctx.lineTo(x - halfW, sideTop);
@@ -702,6 +780,7 @@ class Ghost {
             ctx.closePath();
             ctx.fill();
 
+            ctx.shadowBlur = 0;
             if (this.frightened) {
                 ctx.fillStyle = faceColor;
                 ctx.fillRect(x - 6, y - 5, 3, 3);
@@ -717,6 +796,7 @@ class Ghost {
                 ctx.lineTo(x + 5, y + 3);
                 ctx.lineTo(x + 7, y + 5);
                 ctx.stroke();
+                ctx.restore();
                 return;
             }
         }
@@ -734,11 +814,12 @@ class Ghost {
         ctx.ellipse(x - 5, y - 4, 3.5, 4.8, 0, 0, Math.PI * 2);
         ctx.ellipse(x + 5, y - 4, 3.5, 4.8, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#0000FF';
+        ctx.fillStyle = '#142951';
         ctx.beginPath();
         ctx.arc(x - 5 + off.px, y - 4 + off.py, 2, 0, Math.PI * 2);
         ctx.arc(x + 5 + off.px, y - 4 + off.py, 2, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
     }
 }
 
@@ -864,6 +945,7 @@ function update(dt) {
         stateTimer -= dt;
         if (stateTimer <= 0) {
             gameState = 'playing';
+            document.getElementById('game-status').textContent = 'THE CHASE IS ON';
         }
         return;
     }
@@ -876,7 +958,9 @@ function update(dt) {
             updateHUD();
             if (lives <= 0) {
                 gameState = 'gameover';
-                showOverlay('GAME OVER', 'Press SPACE to play again');
+                saveBest();
+                document.getElementById('pause-btn').disabled = true;
+                showOverlay('One more run?', 'Final score · ' + score.toLocaleString());
                 return;
             }
             pacman = new PacMan();
@@ -893,6 +977,7 @@ function update(dt) {
     if (gameState === 'levelcomplete') {
         stateTimer -= dt;
         if (stateTimer <= 0) {
+            saveBest();
             level++;
             initLevel(true);
         }
@@ -944,33 +1029,40 @@ function update(dt) {
 
 // ==================== RENDER ====================
 function renderMazeOffscreen() {
-    if (!mazeCanvas) {
-        mazeCanvas = document.createElement('canvas');
-        mazeCanvas.width = CANVAS_W;
-        mazeCanvas.height = CANVAS_H;
-        mazeCtx = mazeCanvas.getContext('2d');
-    }
+    if (!mazeCanvas) mazeCanvas = document.createElement('canvas');
+    mazeCanvas.width = Math.round(CANVAS_W * renderScale);
+    mazeCanvas.height = Math.round(CANVAS_H * renderScale);
+    mazeCtx = mazeCanvas.getContext('2d');
+    mazeCtx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
     const savedCtx = ctx;
     ctx = mazeCtx;
-    mazeCtx.fillStyle = '#000';
-    mazeCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    const floor = ctx.createRadialGradient(224, 220, 40, 224, 240, 360);
+    floor.addColorStop(0, '#0c192c');
+    floor.addColorStop(1, '#060c17');
+    ctx.fillStyle = floor;
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
     drawMaze();
     ctx = savedCtx;
 }
 
 function render() {
-    ctx.fillStyle = '#000';
+    if (gameState === 'playing' && !paused) {
+        const status = document.getElementById('game-status');
+        const message = frightTimer > 0 ? 'POWER UP · TURN THE TABLES' : 'THE CHASE IS ON';
+        if (status.textContent !== message) status.textContent = message;
+    }
+    ctx.fillStyle = '#060c17';
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
     if (gameState === 'levelcomplete') {
         const flash = Math.floor(frameCount / 8) % 2;
-        drawMaze(flash ? '#FFFFFF' : '#2121DE');
+        drawMaze(!reducedMotion.matches && flash ? '#d5eeff' : '#4c94f5');
         drawDots();
         return;
     }
 
     if (mazeCanvas) {
-        ctx.drawImage(mazeCanvas, 0, 0);
+        ctx.drawImage(mazeCanvas, 0, 0, CANVAS_W, CANVAS_H);
     } else {
         drawMaze();
     }
@@ -986,8 +1078,8 @@ function render() {
 }
 
 function drawMaze(colorOverride) {
-    const wallColor = colorOverride || '#2727FF';
-    const wallShadow = colorOverride ? colorOverride : '#00006F';
+    const wallColor = colorOverride || '#529ff5';
+    const wallShadow = colorOverride || '#152f62';
 
     const drawMazeEdges = (color, width) => {
         ctx.save();
@@ -1183,12 +1275,16 @@ function drawMaze(colorOverride) {
         ctx.restore();
     };
 
-    drawOuterEdge(wallShadow, 3, 0.75);
+    ctx.save();
+    ctx.shadowColor = colorOverride || '#2475ef';
+    ctx.shadowBlur = 7;
+    drawOuterEdge(wallShadow, 4, 0.75);
     drawOuterEdge(wallColor, 1.5, 0.75);
     drawOuterEdge(wallShadow, 3, 5.75);
     drawOuterEdge(wallColor, 1.5, 5.75);
-    drawMazeEdges(wallShadow, 3);
-    drawMazeEdges(wallColor, 1.5);
+    drawMazeEdges(wallShadow, 4);
+    drawMazeEdges(wallColor, 1.3);
+    ctx.restore();
 
     ctx.strokeStyle = '#FFB8FF';
     ctx.lineWidth = 2;
@@ -1206,21 +1302,34 @@ function drawMaze(colorOverride) {
 }
 
 function drawDots() {
+    ctx.save();
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const t = grid[r][c];
+            const x = colToX(c), y = rowToY(r);
             if (t === T.DOT) {
-                ctx.fillStyle = '#FFB897';
-                ctx.fillRect(colToX(c) - 2, rowToY(r) - 2, 4, 4);
-            } else if (t === T.PELLET) {
-                if (Math.floor(frameCount / 8) % 2 !== 0) continue;
-                ctx.fillStyle = '#FFB897';
+                ctx.fillStyle = '#efcf97';
                 ctx.beginPath();
-                ctx.arc(colToX(c), rowToY(r), 6, 0, Math.PI * 2);
+                ctx.arc(x, y, 1.8, 0, Math.PI * 2);
                 ctx.fill();
+            } else if (t === T.PELLET) {
+                const pulse = reducedMotion.matches ? 0.5 : (Math.sin(frameCount * 0.08) + 1) / 2;
+                ctx.strokeStyle = '#ffe5a04d';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(x, y, 7 + pulse, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.shadowColor = '#ffdb72';
+                ctx.shadowBlur = 9 + pulse * 5;
+                ctx.fillStyle = '#fff0b5';
+                ctx.beginPath();
+                ctx.arc(x, y, 4.5 + pulse * 0.5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
             }
         }
     }
+    ctx.restore();
 }
 
 // ---- Pixel-art fruit sprites (16x16), styled after the arcade originals ----
@@ -1441,9 +1550,15 @@ function drawCenterText(text, color, x, y) {
 
 // ==================== HUD ====================
 function updateHUD() {
-    document.getElementById('score').textContent = score;
-    document.getElementById('level').textContent = level;
+    bestScore = Math.max(bestScore, score);
+    document.getElementById('score').textContent = String(score).padStart(6, '0');
+    document.getElementById('best').textContent = String(bestScore).padStart(6, '0');
+    document.getElementById('level').textContent = String(level).padStart(2, '0');
+    document.getElementById('dots-remaining').textContent = (totalDots - dotsEaten) + ' DOTS TO GO';
+    document.getElementById('progress-fill').style.width = (dotsEaten / totalDots * 100) + '%';
+    document.getElementById('game-status').textContent = gameState === 'ready' ? 'READY FOR A FRESH RUN' : frightTimer > 0 ? 'POWER UP · TURN THE TABLES' : 'THE CHASE IS ON';
     const livesEl = document.getElementById('lives');
+    livesEl.setAttribute('aria-label', Math.max(0, lives - 1) + ' extra lives');
     livesEl.innerHTML = '';
     for (let i = 0; i < lives - 1; i++) {
         const icon = document.createElement('div');
@@ -1471,8 +1586,12 @@ function showOverlay(text, subtext) {
     const txt = document.getElementById('overlay-text');
     txt.textContent = text;
     if (subtext) {
-        txt.innerHTML = text + '<br><span style="font-size:14px;color:#fff;letter-spacing:2px">' + subtext + '</span>';
+        const description = document.createElement('small');
+        description.textContent = subtext;
+        txt.appendChild(description);
     }
+    document.getElementById('resume-btn').textContent = gameState === 'gameover' ? 'PLAY AGAIN ↗' : 'BACK TO THE CHASE ↗';
+    if (gameState === 'gameover') document.getElementById('game-status').textContent = 'GOOD RUN. GO AGAIN.';
 }
 
 function hideOverlay() {
@@ -1482,6 +1601,8 @@ function hideOverlay() {
 // ==================== INPUT ====================
 function restartGame() {
     hideOverlay();
+    document.getElementById('pause-btn').disabled = false;
+    document.getElementById('resume-btn').blur();
     score = 0;
     level = 1;
     lives = 3;
@@ -1489,7 +1610,7 @@ function restartGame() {
 }
 
 function queueDirection(dir) {
-    if (!pacman) return;
+    if (!pacman || gameState === 'title' || paused) return;
     if (gameState === 'gameover') {
         restartGame();
         return;
@@ -1499,7 +1620,13 @@ function queueDirection(dir) {
 
 function setupInput() {
     document.addEventListener('keydown', (e) => {
-        if (!pacman) return;
+        if (e.target instanceof HTMLButtonElement && (e.key === ' ' || e.key === 'Enter')) return;
+        if (e.key.toLowerCase() === 'm' && !e.repeat) { toggleSound(); return; }
+        if (gameState === 'title' && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault(); startGame(); return;
+        }
+        if (e.key.toLowerCase() === 'p' && !e.repeat) { togglePause(); return; }
+        if (!pacman || paused || gameState === 'title') return;
         if (gameState === 'gameover' && (e.key === ' ' || e.key === 'Enter')) {
             restartGame();
             e.preventDefault();
@@ -1513,7 +1640,7 @@ function setupInput() {
         }
     });
 
-    const swipeTarget = document.getElementById('game-wrap');
+    const swipeTarget = document.getElementById('game-canvas');
     if (!swipeTarget) return;
     let swipeStart = null;
 
@@ -1527,7 +1654,10 @@ function setupInput() {
         swipeStart = null;
         const absX = Math.abs(dx);
         const absY = Math.abs(dy);
-        if (Math.max(absX, absY) < SWIPE_MIN_DISTANCE) return;
+        if (Math.max(absX, absY) < SWIPE_MIN_DISTANCE) {
+            if (running && !paused && gameState !== 'gameover') togglePause();
+            return;
+        }
         if (absX > absY * SWIPE_AXIS_RATIO) {
             queueDirection(dx > 0 ? DIR.RIGHT : DIR.LEFT);
         } else if (absY > absX * SWIPE_AXIS_RATIO) {
@@ -1576,325 +1706,16 @@ function gameLoop(timestamp) {
     try {
         const delta = Math.min(timestamp - lastTime, 100);
         lastTime = timestamp;
-        accumulator += delta;
+        if (!paused) accumulator += delta;
 
         while (accumulator >= FRAME_TIME) {
             update(FRAME_TIME / 1000);
             accumulator -= FRAME_TIME;
         }
 
-        render();
+        if (!paused) render();
     } catch (e) {
         console.error('Game loop error:', e);
     }
     requestAnimationFrame(gameLoop);
-}
-
-// ==================== SOUND ====================
-class SoundManager {
-    constructor() {
-        this.ctx = null;
-        this.wakaToggle = false;
-        this.enabled = true;
-        this.sirenNodes = null;
-        this.frightNodes = null;
-        this.sirenLevel = -1;
-        this.lastMode = 'none';
-        try {
-            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-            if (this.ctx.state === 'suspended') this.ctx.resume();
-        } catch (e) {
-            this.enabled = false;
-        }
-    }
-
-    _connect(osc, gain, vol) {
-        gain.gain.value = vol;
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-    }
-
-    _tone(freq, start, dur, vol, type, endFreq) {
-        if (freq <= 0) return;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = type || 'square';
-        osc.frequency.setValueAtTime(freq, start);
-        if (endFreq) osc.frequency.exponentialRampToValueAtTime(endFreq, start + dur);
-        gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.linearRampToValueAtTime(vol, start + Math.min(0.006, dur * 0.25));
-        gain.gain.setValueAtTime(vol, start + dur * 0.55);
-        gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-        osc.start(start);
-        osc.stop(start + dur + 0.01);
-    }
-
-    waka() {
-        if (!this.enabled) return;
-        const t = this.ctx.currentTime;
-        const dur = 0.042;
-        const a = this.wakaToggle ? 390 : 520;
-        const b = this.wakaToggle ? 520 : 390;
-        this._tone(a, t, dur, 0.075, 'square', b);
-        this._tone(b * 0.5, t + dur * 0.35, dur * 0.75, 0.035, 'square', a * 0.5);
-        this.wakaToggle = !this.wakaToggle;
-    }
-
-    eatGhost() {
-        if (!this.enabled) return;
-        const notes = [392, 523, 659, 784, 1047, 1319];
-        const stepDur = 0.045;
-        for (let i = 0; i < notes.length; i++) {
-            const t = this.ctx.currentTime + i * stepDur;
-            this._tone(notes[i], t, stepDur * 1.25, 0.12, 'square');
-            this._tone(notes[i] * 0.5, t, stepDur, 0.035, 'square');
-        }
-    }
-
-    eatFruit() {
-        if (!this.enabled) return;
-        const notes = [[523, 0.06], [0, 0.02], [659, 0.06], [0, 0.02], [784, 0.12]];
-        let t = 0;
-        for (const [freq, dur] of notes) {
-            if (freq > 0) {
-                const start = this.ctx.currentTime + t;
-                const osc = this.ctx.createOscillator();
-                const gain = this.ctx.createGain();
-                osc.type = 'square';
-                osc.frequency.setValueAtTime(freq, start);
-                gain.gain.setValueAtTime(0.12, start);
-                gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-                osc.connect(gain);
-                gain.connect(this.ctx.destination);
-                osc.start(start);
-                osc.stop(start + dur);
-            }
-            t += dur;
-        }
-    }
-
-    death() {
-        if (!this.enabled) return;
-        const t0 = this.ctx.currentTime;
-        const starts = [1245, 1175, 1047, 988, 880, 784, 698, 622, 523, 440];
-        let t = 0;
-        for (let i = 0; i < starts.length; i++) {
-            const dur = 0.09 + i * 0.008;
-            this._tone(starts[i], t0 + t, dur, 0.105, 'square', Math.max(70, starts[i] * 0.56));
-            t += dur * 0.92;
-        }
-        this._tone(196, t0 + t + 0.03, 0.24, 0.09, 'square', 55);
-    }
-
-    playIntro() {
-        if (!this.enabled) return;
-        const N = {
-            DS5: 622.25, E5: 659.25, F5: 698.46, FS5: 739.99,
-            G5: 783.99, GS5: 830.61, A5: 880.00, B5: 987.77,
-            C6: 1046.50, R: 0
-        };
-        const a = 0.105;   // quick arpeggio note
-        const h = 0.17;    // held note
-        // Transcribed from the arcade intro: descending major-triad arpeggio
-        // figures answered by a rising chromatic climb, over two phrases.
-        const melody = [
-            [N.B5, a], [N.FS5, a], [N.DS5, h], [N.B5, a], [N.FS5, a], [N.DS5, h],
-            [N.C6, a], [N.G5, a], [N.E5, h], [N.G5, a], [N.E5, h], [N.R, a],
-            [N.B5, a], [N.FS5, a], [N.DS5, h], [N.B5, a], [N.FS5, a], [N.DS5, h],
-            [N.DS5, a], [N.E5, a], [N.F5, a], [N.FS5, a], [N.G5, a], [N.GS5, a],
-            [N.A5, a], [N.B5, h * 2.4],
-        ];
-
-        let t = 0;
-        for (const [freq, dur] of melody) {
-            if (freq > 0) {
-                const start = this.ctx.currentTime + t;
-                this._tone(freq, start, dur * 0.9, 0.085, 'square');
-                if (freq >= N.E5) this._tone(freq / 2, start, dur * 0.85, 0.035, 'square');
-            }
-            t += dur;
-        }
-    }
-
-    levelComplete() {
-        if (!this.enabled) return;
-        const N = {
-            C5: 523, D5: 587, E5: 659, F5: 698, G5: 784,
-            A5: 880, B5: 988, C6: 1047, R: 0
-        };
-        const melody = [
-            [N.C5, 0.08], [N.E5, 0.08], [N.G5, 0.08], [N.C6, 0.12],
-            [N.R, 0.03],
-            [N.B5, 0.08], [N.G5, 0.08], [N.E5, 0.08], [N.C5, 0.12],
-            [N.R, 0.03],
-            [N.D5, 0.08], [N.F5, 0.08], [N.A5, 0.08], [N.D5, 0.12],
-            [N.R, 0.15],
-            [N.G5, 0.15], [N.C6, 0.15], [N.E5, 0.15],
-        ];
-        let t = 0;
-        for (const [freq, dur] of melody) {
-            if (freq > 0) {
-                const start = this.ctx.currentTime + t;
-                const osc = this.ctx.createOscillator();
-                const gain = this.ctx.createGain();
-                osc.type = 'square';
-                osc.frequency.setValueAtTime(freq, start);
-                gain.gain.setValueAtTime(0.1, start);
-                gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-                osc.connect(gain);
-                gain.connect(this.ctx.destination);
-                osc.start(start);
-                osc.stop(start + dur);
-            }
-            t += dur;
-        }
-    }
-
-    _stopLoop(nodes) {
-        if (!nodes) return null;
-        try {
-            for (const n of nodes.oscs) {
-                try { n.stop(this.ctx.currentTime + 0.05); } catch (e) {}
-            }
-            for (const g of nodes.gains) {
-                try { g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.05); } catch (e) {}
-            }
-        } catch (e) {}
-        return null;
-    }
-
-    startSiren() {
-        if (!this.enabled) return;
-        this.sirenNodes = this._stopLoop(this.sirenNodes);
-        const t = this.ctx.currentTime;
-        const lvl = Math.max(0, Math.min(3, this.sirenLevel));
-        const baseFreq = [95, 108, 124, 142][lvl];
-        const modRate = [4.5, 5.1, 5.8, 6.6][lvl];
-        const modDepth = baseFreq * 0.72;
-
-        const carrier = this.ctx.createOscillator();
-        const sub = this.ctx.createOscillator();
-        const lfo = this.ctx.createOscillator();
-        const lfoGain = this.ctx.createGain();
-        const subLfoGain = this.ctx.createGain();
-        const sirenGain = this.ctx.createGain();
-
-        carrier.type = 'square';
-        carrier.frequency.value = baseFreq;
-        sub.type = 'square';
-        sub.frequency.value = baseFreq / 2;
-
-        // A rising sawtooth ramp that snaps back each cycle reads as a siren,
-        // unlike a smooth sine vibrato. Rate/pitch climb as dots are cleared.
-        lfo.type = 'sawtooth';
-        lfo.frequency.value = modRate;
-        lfoGain.gain.value = modDepth;
-        subLfoGain.gain.value = baseFreq * 0.2;
-
-        lfo.connect(lfoGain);
-        lfoGain.connect(carrier.frequency);
-        lfo.connect(subLfoGain);
-        subLfoGain.connect(sub.frequency);
-
-        sirenGain.gain.value = 0.038;
-
-        carrier.connect(sirenGain);
-        sub.connect(sirenGain);
-        sirenGain.connect(this.ctx.destination);
-
-        carrier.start(t);
-        sub.start(t);
-        lfo.start(t);
-
-        this.sirenNodes = { oscs: [carrier, sub, lfo], gains: [sirenGain] };
-    }
-
-    stopSiren() {
-        this.sirenNodes = this._stopLoop(this.sirenNodes);
-    }
-
-    startFrightenedLoop() {
-        if (!this.enabled) return;
-        this.frightNodes = this._stopLoop(this.frightNodes);
-        const t = this.ctx.currentTime;
-
-        const carrier = this.ctx.createOscillator();
-        const pulse = this.ctx.createOscillator();
-        const lfo = this.ctx.createOscillator();
-        const lfoGain = this.ctx.createGain();
-        const gain = this.ctx.createGain();
-
-        carrier.type = 'square';
-        carrier.frequency.value = 185;
-        pulse.type = 'square';
-        pulse.frequency.value = 92;
-
-        lfo.type = 'square';
-        lfo.frequency.value = 7.5;
-        lfoGain.gain.value = 70;
-
-        lfo.connect(lfoGain);
-        lfoGain.connect(carrier.frequency);
-        lfoGain.connect(pulse.frequency);
-
-        gain.gain.value = 0.044;
-
-        carrier.connect(gain);
-        pulse.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        carrier.start(t);
-        pulse.start(t);
-        lfo.start(t);
-
-        this.frightNodes = { oscs: [carrier, pulse, lfo], gains: [gain] };
-    }
-
-    stopFrightenedLoop() {
-        this.frightNodes = this._stopLoop(this.frightNodes);
-    }
-
-    startFright() {
-        if (!this.enabled) return;
-        this.stopSiren();
-        const t = this.ctx.currentTime;
-        this._tone(156, t, 0.09, 0.11, 'square', 330);
-        this._tone(312, t + 0.06, 0.12, 0.085, 'square', 210);
-    }
-
-    updateSiren(eaten, total) {
-        if (!this.enabled) return;
-        if (gameState !== 'playing') {
-            this.stopSiren();
-            this.stopFrightenedLoop();
-            this.lastMode = 'none';
-            return;
-        }
-
-        if (frightTimer > 0) {
-            if (this.lastMode !== 'frightened') {
-                this.stopSiren();
-                this.startFrightenedLoop();
-                this.lastMode = 'frightened';
-            }
-            return;
-        }
-
-        if (this.lastMode !== 'siren') {
-            this.stopFrightenedLoop();
-            const newLevel = eaten < total * 0.25 ? 0 : eaten < total * 0.5 ? 1 : eaten < total * 0.75 ? 2 : 3;
-            this.sirenLevel = newLevel;
-            this.startSiren();
-            this.lastMode = 'siren';
-            return;
-        }
-
-        const newLevel = eaten < total * 0.3 ? 0 : eaten < total * 0.6 ? 1 : 2;
-        if (newLevel !== this.sirenLevel) {
-            this.sirenLevel = newLevel;
-            this.startSiren();
-        }
-    }
 }
